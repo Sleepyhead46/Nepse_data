@@ -1,3 +1,4 @@
+import argparse
 import re
 from pathlib import Path
 import pandas as pd
@@ -83,8 +84,9 @@ def interpolate_hourly_day(row):
     return hourly_rows
 
 
-def process_company_backfill(file_path):
-    """Processes a single company's daily CSV incrementally to backfill hourly data."""
+def process_company_backfill(file_path, limit_days=None):
+    """Processes a single company's daily CSV incrementally to backfill hourly data
+    from the last hourly recorded date up to the current latest date."""
     symbol = file_path.stem
     clean_symbol = re.sub(r"[^\w\-]", "_", symbol)
 
@@ -94,21 +96,32 @@ def process_company_backfill(file_path):
 
     out_file = HOURLY_DIR / f"{clean_symbol}.csv"
 
-    # If hourly file already exists, filter to only un-backfilled dates
+    # Find the latest date already backfilled in hourly CSV
+    last_hourly_date = None
+    existing_hourly_dates = set()
+    existing_hourly_df = None
+
     if out_file.exists() and out_file.stat().st_size > 0:
         try:
-            existing_dates_df = pd.read_csv(out_file, usecols=["published_date"])
-            existing_dates = set(
-                existing_dates_df["published_date"].dropna().astype(str).str.strip().values
-            )
-            # Keep only daily rows that have not yet been backfilled into hourly CSV
-            daily_to_process = daily_df[
-                ~daily_df["published_date"].astype(str).str.strip().isin(existing_dates)
-            ]
+            existing_hourly_df = pd.read_csv(out_file)
+            if "published_date" in existing_hourly_df.columns and not existing_hourly_df.empty:
+                existing_hourly_dates = set(
+                    existing_hourly_df["published_date"].dropna().astype(str).str.strip().values
+                )
+                last_hourly_date = str(existing_hourly_df["published_date"].dropna().max()).strip()
         except Exception:
-            daily_to_process = daily_df
+            existing_hourly_df = None
+
+    if last_hourly_date:
+        daily_to_process = daily_df[
+            (daily_df["published_date"].astype(str).str.strip() > last_hourly_date)
+            | (~daily_df["published_date"].astype(str).str.strip().isin(existing_hourly_dates))
+        ]
     else:
         daily_to_process = daily_df
+
+    if limit_days and len(daily_to_process) > limit_days:
+        daily_to_process = daily_to_process.tail(limit_days)
 
     if daily_to_process.empty:
         return 0, "up_to_date"
@@ -123,28 +136,33 @@ def process_company_backfill(file_path):
 
     new_hourly_df = pd.DataFrame(all_hourly_records, columns=HOURLY_COLUMNS)
 
-    if out_file.exists() and out_file.stat().st_size > 0:
-        try:
-            existing_df = pd.read_csv(out_file)
-            combined_df = pd.concat([existing_df, new_hourly_df], ignore_index=True)
-            combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
-            combined_df = combined_df.sort_values(by="timestamp").reset_index(drop=True)
-            combined_df.to_csv(out_file, index=False)
-            return len(new_hourly_df), "updated"
-        except Exception:
-            pass
-
-    new_hourly_df = new_hourly_df.sort_values(by="timestamp").reset_index(drop=True)
-    new_hourly_df.to_csv(out_file, index=False)
-    return len(new_hourly_df), "created"
+    if existing_hourly_df is not None and not existing_hourly_df.empty:
+        combined_df = pd.concat([existing_hourly_df, new_hourly_df], ignore_index=True)
+        combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
+        combined_df = combined_df.sort_values(by="timestamp").reset_index(drop=True)
+        combined_df.to_csv(out_file, index=False)
+        return len(new_hourly_df), "updated"
+    else:
+        new_hourly_df = new_hourly_df.sort_values(by="timestamp").reset_index(drop=True)
+        new_hourly_df.to_csv(out_file, index=False)
+        return len(new_hourly_df), "created"
 
 
 def main():
+    parser = argparse.ArgumentParser(description="NEPSE Hourly Data Incremental Backfill")
+    parser.add_argument(
+        "--limit-days",
+        type=int,
+        default=None,
+        help="Limit number of most recent daily rows to backfill per company",
+    )
+    args = parser.parse_args()
+
     HOURLY_DIR.mkdir(parents=True, exist_ok=True)
 
     daily_files = list(DAILY_DIR.glob("*.csv"))
     total_files = len(daily_files)
-    print(f"Starting incremental hourly backfill for {total_files} companies...")
+    print(f"Starting incremental hourly backfill (from last date to current) for {total_files} companies...")
 
     updated_companies = 0
     up_to_date_companies = 0
@@ -152,7 +170,7 @@ def main():
     total_new_records = 0
 
     for file_path in daily_files:
-        count, status = process_company_backfill(file_path)
+        count, status = process_company_backfill(file_path, limit_days=args.limit_days)
         if status == "updated":
             updated_companies += 1
             total_new_records += count

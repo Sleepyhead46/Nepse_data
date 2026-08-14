@@ -23,11 +23,11 @@ def _post(session, token, company_id, start, length):
     return resp.json()
 
 
-def fetch_history(session, token, company_id, existing_dates=None, size=PAGE_SIZE):
-    """Fetch history rows for a company (newest-first). If existing_dates is provided,
-    stops pagination early once already-recorded dates are encountered and returns
-    only the un-fetched new records."""
-    if existing_dates is None:
+def fetch_history(session, token, company_id, max_existing_date=None, existing_dates=None, size=PAGE_SIZE):
+    """Fetch history rows for a company (newest-first). If max_existing_date is provided,
+    stops pagination early as soon as records with date <= max_existing_date are encountered,
+    returning only the newer un-fetched records from last date to current."""
+    if not existing_dates and not max_existing_date:
         first = _post(session, token, company_id, 0, 1)
         total = records_total(first)
         rows = []
@@ -37,7 +37,7 @@ def fetch_history(session, token, company_id, existing_dates=None, size=PAGE_SIZ
             rows.extend(page.get("data", []))
         return rows
 
-    # Incremental fetch mode
+    # Incremental fetch mode from last date to current
     new_rows = []
     start = 0
     while True:
@@ -50,7 +50,11 @@ def fetch_history(session, token, company_id, existing_dates=None, size=PAGE_SIZ
         reached_existing = False
         for rec in page_records:
             rec_date = str(rec.get("published_date", "")).strip()
-            if rec_date in existing_dates:
+            if not rec_date:
+                continue
+
+            # If we encounter an existing date or date older than max_existing_date, stop
+            if (max_existing_date and rec_date <= max_existing_date) or (existing_dates and rec_date in existing_dates):
                 reached_existing = True
             else:
                 new_rows.append(rec)
@@ -64,12 +68,21 @@ def fetch_history(session, token, company_id, existing_dates=None, size=PAGE_SIZ
     return new_rows
 
 
-def collect_company(session, token, symbol, company_id, existing_dates=None):
+def collect_company(session, token, symbol, company_id, max_existing_date=None, existing_dates=None):
     """Return (rows, token). rows is None on failure, [] if untraded or already up-to-date.
     Refreshes the CSRF token and retries on auth/HTTP/timeout errors."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            return fetch_history(session, token, company_id, existing_dates=existing_dates), token
+            return (
+                fetch_history(
+                    session,
+                    token,
+                    company_id,
+                    max_existing_date=max_existing_date,
+                    existing_dates=existing_dates,
+                ),
+                token,
+            )
         except (AuthError, requests.RequestException) as exc:
             print(f"  issue ({type(exc).__name__}): {exc}; refreshing token")
             time.sleep(2)
@@ -91,24 +104,34 @@ def main():
     seeded = updated = up_to_date = empty = failed = 0
     total_companies = len(companyIdMap)
 
-    print(f"Starting NEPSE history scraper for {total_companies} companies (incremental mode)...")
+    print(f"Starting NEPSE history scraper for {total_companies} companies (incremental mode: last date to current)...")
 
     for idx, (symbol, company_id) in enumerate(companyIdMap.items(), 1):
         out_file = OUT_DIR / f"{symbol}.csv"
         existing_df = None
         existing_dates = None
+        max_existing_date = None
 
         if out_file.exists() and out_file.stat().st_size > 0:
             try:
                 existing_df = pd.read_csv(out_file)
-                if "published_date" in existing_df.columns:
+                if "published_date" in existing_df.columns and not existing_df.empty:
                     existing_dates = set(existing_df["published_date"].dropna().astype(str).str.strip().values)
+                    max_existing_date = str(existing_df["published_date"].dropna().max()).strip()
             except Exception:
                 existing_df = None
                 existing_dates = None
+                max_existing_date = None
 
-        print(f"[{idx}/{total_companies}] Checking {symbol} (id={company_id})...")
-        rows, token = collect_company(session, token, symbol, company_id, existing_dates=existing_dates)
+        print(f"[{idx}/{total_companies}] Checking {symbol} (id={company_id}, last_date={max_existing_date or 'None'})...")
+        rows, token = collect_company(
+            session,
+            token,
+            symbol,
+            company_id,
+            max_existing_date=max_existing_date,
+            existing_dates=existing_dates,
+        )
 
         if rows is None:
             failed += 1
@@ -116,7 +139,7 @@ def main():
 
         if not rows:
             if existing_dates is not None:
-                print(f"  {symbol} is already up to date ({len(existing_dates)} existing records).")
+                print(f"  {symbol} is already up to date ({len(existing_dates)} existing records, up to {max_existing_date}).")
                 up_to_date += 1
             else:
                 print(f"  no records for {symbol} (untraded).")
@@ -133,6 +156,7 @@ def main():
             print(f"  appended {len(new_df)} new rows (total {len(combined_df)}) -> {out_file.name}")
             updated += 1
         else:
+            new_df = new_df.sort_values(by="published_date").reset_index(drop=True)
             new_df.to_csv(out_file, index=False)
             print(f"  created new file with {len(new_df)} rows -> {out_file.name}")
             seeded += 1

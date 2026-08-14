@@ -2,8 +2,8 @@ name: update-nepse-data
 
 on:
   schedule:
-    # Runs hourly Sun-Fri, 9:00 AM - 6:00 PM NPT (03:15 to 12:15 UTC)
-    - cron: "15 3,4,5,6,7,8,9,10,11,12 * * 0,1,2,3,4,5"
+    # Runs daily at 5:00 PM NPT (11:15 UTC)
+    - cron: "15 11 * * *"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ defaults:
 
 jobs:
   update-data:
-    name: Scrape & Commit NEPSE Data (9AM-6PM NPT, Sun-Fri)
+    name: Scrape & Commit NEPSE Data (5:00 PM NPT Daily)
     runs-on: ubuntu-latest
 
     steps:
@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scrapers (discovery → daily → hourly)
+      - name: Run scrapers (discovery → daily → hourly → minute)
         run: python runAllScrapers.py
 
       - name: Configure git identity
@@ -41,7 +41,7 @@ jobs:
       - name: Commit updated data files
         run: |
           git add -A
-          git commit -m "chore: auto-update NEPSE daily & hourly data [$(date -u +'%Y-%m-%d %H:%M UTC')]" || echo "No changes to commit"
+          git commit -m "chore: auto-update NEPSE daily, hourly & minute data [$(date -u +'%Y-%m-%d %H:%M UTC')]" || echo "No changes to commit"
 
       - name: Push changes
         uses: ad-m/github-push-action@master

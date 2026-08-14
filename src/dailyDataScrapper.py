@@ -31,25 +31,6 @@ def clean_number(val, default=0.0):
         return default
 
 
-def is_date_already_recorded(file_path, target_date):
-    """Checks if target_date already exists in the CSV file."""
-    if not file_path.exists() or file_path.stat().st_size == 0:
-        return False
-    try:
-        df = pd.read_csv(file_path, usecols=["published_date"])
-        dates = set(df["published_date"].dropna().astype(str).str.strip().values)
-        return str(target_date).strip() in dates
-    except Exception:
-        try:
-            df = pd.read_csv(file_path)
-            if "published_date" in df.columns:
-                dates = set(df["published_date"].dropna().astype(str).str.strip().values)
-                return str(target_date).strip() in dates
-        except Exception:
-            return False
-    return False
-
-
 def main():
     file_dir = (Path(__file__).resolve().parent.parent / "data" / "company-wise").resolve()
     file_dir.mkdir(parents=True, exist_ok=True)
@@ -75,10 +56,9 @@ def main():
     symbols = data_table["Symbol"].dropna().unique()
     total_symbols = len(symbols)
     updated_count = 0
-    skipped_count = 0
     new_count = 0
 
-    print(f"Processing daily data for {total_symbols} symbols...")
+    print(f"Processing daily data for {total_symbols} symbols (updating to {today})...")
 
     for raw_symbol in symbols:
         raw_symbol_str = str(raw_symbol).strip()
@@ -88,11 +68,6 @@ def main():
 
         symbol = re.sub(r"[^\w\-]", "_", raw_symbol_str)
         out_file = file_dir / f"{symbol}.csv"
-
-        # Check if already fetched for today
-        if is_date_already_recorded(out_file, today):
-            skipped_count += 1
-            continue
 
         row = matching.iloc[0]
         open_val = clean_number(row.get("Open", 0.0))
@@ -120,15 +95,24 @@ def main():
         new_df = pd.DataFrame(data_row, columns=DAILY_COLUMNS)
 
         if out_file.exists() and out_file.stat().st_size > 0:
-            new_df.to_csv(out_file, mode="a", header=False, index=False)
-            updated_count += 1
+            try:
+                existing_df = pd.read_csv(out_file)
+                # Filter out today's previous row if re-running intra-day
+                existing_df = existing_df[existing_df["published_date"].astype(str).str.strip() != today]
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                combined_df = combined_df.drop_duplicates(subset=["published_date"], keep="last")
+                combined_df = combined_df.sort_values(by="published_date").reset_index(drop=True)
+                combined_df.to_csv(out_file, index=False)
+                updated_count += 1
+            except Exception:
+                new_df.to_csv(out_file, index=False)
+                updated_count += 1
         else:
             new_df.to_csv(out_file, index=False)
             new_count += 1
 
     print(
-        f"Daily scrape complete. Updated: {updated_count}, New companies created: {new_count}, "
-        f"Skipped (already fetched for {today}): {skipped_count}."
+        f"Daily scrape complete. Updated/Appended: {updated_count}, New companies created: {new_count} (Market Date: {today})."
     )
 
 

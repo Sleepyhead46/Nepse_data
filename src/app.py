@@ -18,6 +18,7 @@ st.set_page_config(
 BASE_DIR = Path(__file__).resolve().parent.parent
 DAILY_DIR = BASE_DIR / "data" / "company-wise"
 HOURLY_DIR = BASE_DIR / "data" / "company-wise-hourly"
+MINUTE_DIR = BASE_DIR / "data" / "company-wise-minute"
 
 # Apple Design System CSS Injection
 st.markdown(
@@ -184,7 +185,13 @@ def get_available_companies():
 @st.cache_data(ttl=300, show_spinner=False)
 def load_company_data(symbol: str, granularity: str = "Daily") -> pd.DataFrame:
     """Loads and formats the CSV dataset for a given symbol and granularity."""
-    target_dir = HOURLY_DIR if granularity == "Hourly" else DAILY_DIR
+    if granularity == "Hourly":
+        target_dir = HOURLY_DIR
+    elif granularity == "Minute":
+        target_dir = MINUTE_DIR
+    else:
+        target_dir = DAILY_DIR
+
     file_path = target_dir / f"{symbol}.csv"
 
     if not file_path.exists():
@@ -194,7 +201,7 @@ def load_company_data(symbol: str, granularity: str = "Daily") -> pd.DataFrame:
     if df.empty:
         return df
 
-    if granularity == "Hourly" and "timestamp" in df.columns:
+    if granularity in ["Hourly", "Minute"] and "timestamp" in df.columns:
         df["datetime"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values(by="datetime").reset_index(drop=True)
     else:
@@ -347,7 +354,7 @@ if not symbols:
 default_index = symbols.index("NABIL") if "NABIL" in symbols else 0
 selected_symbol = st.sidebar.selectbox("Symbol / Ticker", symbols, index=default_index)
 
-granularity = st.sidebar.radio("Granularity", ["Daily", "Hourly"], horizontal=True)
+granularity = st.sidebar.radio("Granularity", ["Daily", "Hourly", "Minute"], horizontal=True)
 
 # Timeframe Filter
 st.sidebar.markdown("#### **Date Range**")
@@ -470,7 +477,7 @@ elif price_change < 0:
 else:
     pill_html = '<div class="pill-gray">━ Rs. 0.00 (0.00%)</div>'
 
-date_str = latest_row['datetime'].strftime('%b %d, %Y · %I:%M %p' if granularity == 'Hourly' else '%b %d, %Y')
+date_str = latest_row['datetime'].strftime('%b %d, %Y · %I:%M %p' if granularity in ['Hourly', 'Minute'] else '%b %d, %Y')
 
 # Render Apple Hero Header Card
 st.markdown(
@@ -880,7 +887,7 @@ with tab_data:
     )
 
     st.dataframe(
-        filtered_df[display_cols].sort_values(by="published_date", ascending=False).reset_index(drop=True),
+        filtered_df[display_cols].sort_values(by="timestamp" if "timestamp" in display_cols else "published_date", ascending=False).reset_index(drop=True),
         use_container_width=True,
         height=500,
     )
