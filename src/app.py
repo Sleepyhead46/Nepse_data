@@ -211,38 +211,125 @@ def load_company_data(symbol: str, granularity: str = "Daily") -> pd.DataFrame:
 
 
 def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Computes technical analysis indicators: SMAs, EMAs, RSI, MACD, Bollinger Bands."""
+    """Computes technical analysis indicators: SMAs, EMAs, Bollinger Bands, VWAP,
+    Parabolic SAR, RSI, MACD, Stochastic, ATR, CCI, Williams %R, OBV."""
     if len(df) < 5:
         return df
 
     data = df.copy()
 
-    # Moving Averages
-    data["SMA20"] = data["close"].rolling(window=20).mean()
-    data["SMA50"] = data["close"].rolling(window=50).mean()
+    # --- Moving Averages ---
+    data["SMA20"]  = data["close"].rolling(window=20).mean()
+    data["SMA50"]  = data["close"].rolling(window=50).mean()
     data["SMA200"] = data["close"].rolling(window=200).mean()
+    data["EMA20"]  = data["close"].ewm(span=20, adjust=False).mean()
+    data["EMA50"]  = data["close"].ewm(span=50, adjust=False).mean()
 
-    data["EMA20"] = data["close"].ewm(span=20, adjust=False).mean()
-    data["EMA50"] = data["close"].ewm(span=50, adjust=False).mean()
-
-    # Bollinger Bands (20, 2)
+    # --- Bollinger Bands (20, 2) ---
     std20 = data["close"].rolling(window=20).std()
     data["BB_Upper"] = data["SMA20"] + (std20 * 2)
     data["BB_Lower"] = data["SMA20"] - (std20 * 2)
 
-    # RSI (14)
+    # --- VWAP (cumulative intraday; resets per session via date grouping) ---
+    if "traded_amount" in data.columns and "traded_quantity" in data.columns:
+        data["_pv"] = data["traded_amount"]
+        data["_vol"] = data["traded_quantity"].replace(0, np.nan)
+        data["VWAP"] = data["_pv"].cumsum() / data["_vol"].cumsum()
+        data.drop(columns=["_pv", "_vol"], inplace=True)
+
+    # --- Parabolic SAR ---
+    af_step, af_max = 0.02, 0.20
+    high = data["high"].values
+    low  = data["low"].values
+    n = len(data)
+    sar = np.full(n, np.nan)
+    ep  = np.full(n, np.nan)
+    af  = np.full(n, af_step)
+    bull = True
+    sar[0] = low[0]
+    ep[0]  = high[0]
+    for i in range(1, n):
+        prev_sar = sar[i - 1]
+        prev_ep  = ep[i - 1]
+        prev_af  = af[i - 1]
+        if bull:
+            sar[i] = prev_sar + prev_af * (prev_ep - prev_sar)
+            sar[i] = min(sar[i], low[i - 1], low[i - 2] if i > 1 else low[i - 1])
+            if high[i] > prev_ep:
+                ep[i] = high[i]
+                af[i] = min(prev_af + af_step, af_max)
+            else:
+                ep[i] = prev_ep
+                af[i] = prev_af
+            if low[i] < sar[i]:  # reversal
+                bull = False
+                sar[i] = prev_ep
+                ep[i]  = low[i]
+                af[i]  = af_step
+        else:
+            sar[i] = prev_sar - prev_af * (prev_sar - prev_ep)
+            sar[i] = max(sar[i], high[i - 1], high[i - 2] if i > 1 else high[i - 1])
+            if low[i] < prev_ep:
+                ep[i] = low[i]
+                af[i] = min(prev_af + af_step, af_max)
+            else:
+                ep[i] = prev_ep
+                af[i] = prev_af
+            if high[i] > sar[i]:  # reversal
+                bull = True
+                sar[i] = prev_ep
+                ep[i]  = high[i]
+                af[i]  = af_step
+    data["PSAR"] = sar
+
+    # --- RSI (14) ---
     delta = data["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     data["RSI14"] = 100 - (100 / (1 + rs))
 
-    # MACD (12, 26, 9)
+    # --- MACD (12, 26, 9) ---
     ema12 = data["close"].ewm(span=12, adjust=False).mean()
     ema26 = data["close"].ewm(span=26, adjust=False).mean()
-    data["MACD"] = ema12 - ema26
+    data["MACD"]        = ema12 - ema26
     data["MACD_Signal"] = data["MACD"].ewm(span=9, adjust=False).mean()
-    data["MACD_Hist"] = data["MACD"] - data["MACD_Signal"]
+    data["MACD_Hist"]   = data["MACD"] - data["MACD_Signal"]
+
+    # --- Stochastic Oscillator (14, 3) ---
+    low14  = data["low"].rolling(14).min()
+    high14 = data["high"].rolling(14).max()
+    data["STOCH_K"] = 100 * (data["close"] - low14) / (high14 - low14)
+    data["STOCH_D"] = data["STOCH_K"].rolling(3).mean()
+
+    # --- ATR (14) ---
+    prev_close = data["close"].shift(1)
+    tr = pd.concat([
+        data["high"] - data["low"],
+        (data["high"] - prev_close).abs(),
+        (data["low"]  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    data["ATR14"] = tr.ewm(span=14, adjust=False).mean()
+
+    # --- CCI (20) ---
+    tp = (data["high"] + data["low"] + data["close"]) / 3
+    tp_sma = tp.rolling(20).mean()
+    tp_std = tp.rolling(20).std()
+    data["CCI20"] = (tp - tp_sma) / (0.015 * tp_std)
+
+    # --- Williams %R (14) ---
+    data["WILLR"] = -100 * (high14 - data["close"]) / (high14 - low14)
+
+    # --- OBV (On-Balance Volume) ---
+    obv = [0]
+    for i in range(1, len(data)):
+        if data["close"].iloc[i] > data["close"].iloc[i - 1]:
+            obv.append(obv[-1] + data["traded_quantity"].iloc[i])
+        elif data["close"].iloc[i] < data["close"].iloc[i - 1]:
+            obv.append(obv[-1] - data["traded_quantity"].iloc[i])
+        else:
+            obv.append(obv[-1])
+    data["OBV"] = obv
 
     return data
 
@@ -263,29 +350,60 @@ selected_symbol = st.sidebar.selectbox("Symbol / Ticker", symbols, index=default
 granularity = st.sidebar.radio("Granularity", ["Daily", "Hourly"], horizontal=True)
 
 # Timeframe Filter
-timeframe_options = ["1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "All", "Custom"]
-selected_timeframe = st.sidebar.selectbox("Range", timeframe_options, index=4)
+st.sidebar.markdown("#### **Date Range**")
+_TIMEFRAME_LABELS = {
+    "1 Month":    "1M",
+    "3 Months":   "3M",
+    "6 Months":   "6M",
+    "Year to Date": "YTD",
+    "1 Year":     "1Y",
+    "3 Years":    "3Y",
+    "5 Years":    "5Y",
+    "All Time":   "All",
+    "Custom Range": "Custom",
+}
+_tf_display = st.sidebar.radio(
+    "Preset",
+    list(_TIMEFRAME_LABELS.keys()),
+    index=4,
+    label_visibility="collapsed",
+)
+selected_timeframe = _TIMEFRAME_LABELS[_tf_display]
 
 custom_date_range = None
 if selected_timeframe == "Custom":
     today = datetime.date.today()
     one_year_ago = today - datetime.timedelta(days=365)
-    custom_date_range = st.sidebar.date_input("Date Range", (one_year_ago, today))
+    st.sidebar.markdown("**From / To Date**")
+    col_from, col_to = st.sidebar.columns(2)
+    with col_from:
+        custom_start = st.date_input("From", value=one_year_ago, max_value=today, key="custom_from")
+    with col_to:
+        custom_end = st.date_input("To", value=today, min_value=custom_start, max_value=today, key="custom_to")
+    custom_date_range = (custom_start, custom_end)
 
 # Technical Indicators Toggles
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### **Overlays**")
 chart_type = st.sidebar.radio("Style", ["Candlestick", "Line"], horizontal=True)
-show_sma20 = st.sidebar.checkbox("SMA 20 (Yellow)", value=True)
-show_sma50 = st.sidebar.checkbox("SMA 50 (Orange)", value=False)
-show_sma200 = st.sidebar.checkbox("SMA 200 (Purple)", value=False)
-show_ema20 = st.sidebar.checkbox("EMA 20 (Cyan)", value=False)
-show_bb = st.sidebar.checkbox("Bollinger Bands (20, 2)", value=False)
+show_sma20  = st.sidebar.checkbox("SMA 20  — short trend", value=True)
+show_sma50  = st.sidebar.checkbox("SMA 50  — mid trend", value=False)
+show_sma200 = st.sidebar.checkbox("SMA 200 — long trend", value=False)
+show_ema20  = st.sidebar.checkbox("EMA 20  — reactive short", value=False)
+show_ema50  = st.sidebar.checkbox("EMA 50  — reactive mid", value=False)
+show_bb     = st.sidebar.checkbox("Bollinger Bands (20, 2)", value=False)
+show_vwap   = st.sidebar.checkbox("VWAP — avg price by volume", value=False)
+show_psar   = st.sidebar.checkbox("Parabolic SAR — trend dots", value=False)
 
 st.sidebar.markdown("#### **Oscillators**")
 show_volume = st.sidebar.checkbox("Volume Histogram", value=True)
-show_rsi = st.sidebar.checkbox("RSI (14)", value=True)
-show_macd = st.sidebar.checkbox("MACD (12, 26, 9)", value=False)
+show_rsi    = st.sidebar.checkbox("RSI (14) — momentum", value=True)
+show_macd   = st.sidebar.checkbox("MACD (12,26,9) — trend strength", value=False)
+show_stoch  = st.sidebar.checkbox("Stochastic (14,3) — overbought/sold", value=False)
+show_atr    = st.sidebar.checkbox("ATR (14) — volatility", value=False)
+show_cci    = st.sidebar.checkbox("CCI (20) — cycle", value=False)
+show_willr  = st.sidebar.checkbox("Williams %R (14)", value=False)
+show_obv    = st.sidebar.checkbox("OBV — volume momentum", value=False)
 
 
 # --- DATA LOADING & FILTERING ---
@@ -396,23 +514,15 @@ tab_chart, tab_stats, tab_data = st.tabs(["📈 Chart & Indicators", "📊 Perfo
 with tab_chart:
     # Determine subplot rows
     rows = 1
-    row_heights = [0.62]
+    row_heights = [0.55]
     specs = [[{"secondary_y": False}]]
 
-    if show_volume:
-        rows += 1
-        row_heights.append(0.18)
-        specs.append([{"secondary_y": False}])
-
-    if show_rsi:
-        rows += 1
-        row_heights.append(0.18)
-        specs.append([{"secondary_y": False}])
-
-    if show_macd:
-        rows += 1
-        row_heights.append(0.18)
-        specs.append([{"secondary_y": False}])
+    _osc_height = 0.16
+    for _show in [show_volume, show_rsi, show_macd, show_stoch, show_atr, show_cci, show_willr, show_obv]:
+        if _show:
+            rows += 1
+            row_heights.append(_osc_height)
+            specs.append([{"secondary_y": False}])
 
     # Normalize row heights
     total_h = sum(row_heights)
@@ -481,27 +591,44 @@ with tab_chart:
     if show_ema20 and "EMA20" in filtered_df.columns:
         fig.add_trace(
             go.Scatter(x=filtered_df["datetime"], y=filtered_df["EMA20"], mode="lines", name="EMA 20", line=dict(color="#64d2ff", width=1.4, dash="dot")),
-            row=current_row,
-            col=1,
+            row=current_row, col=1,
+        )
+    if show_ema50 and "EMA50" in filtered_df.columns:
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["EMA50"], mode="lines", name="EMA 50", line=dict(color="#5ac8fa", width=1.4, dash="dashdot")),
+            row=current_row, col=1,
         )
     if show_bb and "BB_Upper" in filtered_df.columns:
         fig.add_trace(
             go.Scatter(x=filtered_df["datetime"], y=filtered_df["BB_Upper"], mode="lines", name="BB Upper", line=dict(color="rgba(142, 142, 147, 0.4)", width=1)),
-            row=current_row,
-            col=1,
+            row=current_row, col=1,
         )
         fig.add_trace(
             go.Scatter(
-                x=filtered_df["datetime"],
-                y=filtered_df["BB_Lower"],
-                mode="lines",
-                name="BB Lower",
-                fill="tonexty",
-                fillcolor="rgba(142, 142, 147, 0.06)",
+                x=filtered_df["datetime"], y=filtered_df["BB_Lower"],
+                mode="lines", name="BB Lower",
+                fill="tonexty", fillcolor="rgba(142, 142, 147, 0.06)",
                 line=dict(color="rgba(142, 142, 147, 0.4)", width=1),
             ),
-            row=current_row,
-            col=1,
+            row=current_row, col=1,
+        )
+    if show_vwap and "VWAP" in filtered_df.columns:
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["VWAP"], mode="lines", name="VWAP", line=dict(color="#ff375f", width=1.6, dash="dot")),
+            row=current_row, col=1,
+        )
+    if show_psar and "PSAR" in filtered_df.columns:
+        psar_colors = [
+            "#30d158" if p < c else "#ff453a"
+            for p, c in zip(filtered_df["PSAR"], filtered_df["close"])
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=filtered_df["datetime"], y=filtered_df["PSAR"],
+                mode="markers", name="Parabolic SAR",
+                marker=dict(color=psar_colors, size=3, symbol="circle"),
+            ),
+            row=current_row, col=1,
         )
 
     fig.update_yaxes(
@@ -605,8 +732,69 @@ with tab_chart:
             zerolinecolor="rgba(255, 255, 255, 0.08)",
         )
 
+    # 5. Stochastic Subplot
+    if show_stoch:
+        current_row += 1
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["STOCH_K"], name="%K", line=dict(color="#ffd60a", width=1.5)),
+            row=current_row, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["STOCH_D"], name="%D", line=dict(color="#ff9f0a", width=1.5, dash="dot")),
+            row=current_row, col=1,
+        )
+        fig.add_hline(y=80, line_dash="dash", line_color="rgba(255,69,58,0.35)", row=current_row, col=1)
+        fig.add_hline(y=20, line_dash="dash", line_color="rgba(48,209,88,0.35)", row=current_row, col=1)
+        fig.update_yaxes(title_text="Stoch", range=[0, 100], row=current_row, col=1,
+                         gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.08)")
+
+    # 6. ATR Subplot
+    if show_atr:
+        current_row += 1
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["ATR14"], name="ATR 14", line=dict(color="#ff9f0a", width=1.5), fill="tozeroy", fillcolor="rgba(255,159,10,0.08)"),
+            row=current_row, col=1,
+        )
+        fig.update_yaxes(title_text="ATR", row=current_row, col=1,
+                         gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.08)")
+
+    # 7. CCI Subplot
+    if show_cci:
+        current_row += 1
+        cci_colors = ["#30d158" if v >= 0 else "#ff453a" for v in filtered_df["CCI20"].fillna(0)]
+        fig.add_trace(
+            go.Bar(x=filtered_df["datetime"], y=filtered_df["CCI20"], name="CCI 20", marker_color=cci_colors, opacity=0.75),
+            row=current_row, col=1,
+        )
+        fig.add_hline(y=100,  line_dash="dash", line_color="rgba(255,69,58,0.35)",  row=current_row, col=1)
+        fig.add_hline(y=-100, line_dash="dash", line_color="rgba(48,209,88,0.35)",  row=current_row, col=1)
+        fig.update_yaxes(title_text="CCI", row=current_row, col=1,
+                         gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.08)")
+
+    # 8. Williams %R Subplot
+    if show_willr:
+        current_row += 1
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["WILLR"], name="%R", line=dict(color="#64d2ff", width=1.5)),
+            row=current_row, col=1,
+        )
+        fig.add_hline(y=-20,  line_dash="dash", line_color="rgba(255,69,58,0.35)",  row=current_row, col=1)
+        fig.add_hline(y=-80,  line_dash="dash", line_color="rgba(48,209,88,0.35)",  row=current_row, col=1)
+        fig.update_yaxes(title_text="W%R", range=[-100, 0], row=current_row, col=1,
+                         gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.08)")
+
+    # 9. OBV Subplot
+    if show_obv:
+        current_row += 1
+        fig.add_trace(
+            go.Scatter(x=filtered_df["datetime"], y=filtered_df["OBV"], name="OBV", line=dict(color="#5e5ce6", width=1.5), fill="tozeroy", fillcolor="rgba(94,92,230,0.08)"),
+            row=current_row, col=1,
+        )
+        fig.update_yaxes(title_text="OBV", row=current_row, col=1,
+                         gridcolor="rgba(255,255,255,0.06)", zerolinecolor="rgba(255,255,255,0.08)")
+
     # Clean Apple Plotly Layout
-    chart_height = 540 + (rows - 1) * 160
+    chart_height = 520 + (rows - 1) * 150
     fig.update_xaxes(
         gridcolor="rgba(255, 255, 255, 0.04)",
         zerolinecolor="rgba(255, 255, 255, 0.08)",

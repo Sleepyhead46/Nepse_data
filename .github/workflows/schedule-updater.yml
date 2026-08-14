@@ -1,9 +1,9 @@
-name: update-companies-data
+name: update-nepse-data
 
 on:
   schedule:
-    # Runs hourly during NEPSE trading hours (Sun-Thu, 11:00 AM - 3:00 PM NPT -> 05:15 to 09:15 UTC)
-    - cron: "15 5,6,7,8,9 * * 0,1,2,3,4"
+    # Runs hourly Sun-Fri, 9:00 AM - 6:00 PM NPT (03:15 to 12:15 UTC)
+    - cron: "15 3,4,5,6,7,8,9,10,11,12 * * 0,1,2,3,4,5"
   workflow_dispatch:
 
 permissions:
@@ -14,26 +14,35 @@ defaults:
     working-directory: ./src
 
 jobs:
-  update-all-data:
-    name: update-all-data
+  update-data:
+    name: Scrape & Commit NEPSE Data (9AM-6PM NPT, Sun-Fri)
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install packages
+
+      - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Run all data scrapers
+
+      - name: Run scrapers (discovery → daily → hourly)
         run: python runAllScrapers.py
-      - name: Setup Git
+
+      - name: Configure git identity
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-      - name: Commit Data Files
+
+      - name: Commit updated data files
         run: |
           git add -A
-          git commit -m "Auto-update all NEPSE daily, hourly, and historical stock data" || echo "No changes to commit"
+          git commit -m "chore: auto-update NEPSE daily & hourly data [$(date -u +'%Y-%m-%d %H:%M UTC')]" || echo "No changes to commit"
+
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
