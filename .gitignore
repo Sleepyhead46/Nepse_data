@@ -35,3 +35,7 @@ ehthumbs.db
 scratch/
 tmp/
 
+# Streamlit Cache
+.streamlit/cache/
+
+

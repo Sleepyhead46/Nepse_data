@@ -12,6 +12,7 @@ An automated, high-performance data scraping and backfilling suite for the Nepal
 - **Incremental & Idempotent**: Fast tail-scanning and date/timestamp index lookups ensure that existing records are never duplicated and re-runs only fetch missing data.
 - **Full History Scraping**: Automated pagination and CSRF session handling against ShareSansar's company price history API for 370+ tickers.
 - **Intraday Backfill Engine**: Mathematical intra-day price interpolation algorithms to backfill hourly datasets from daily historical data.
+- **Interactive Streamlit Web Dashboard**: Real-time visual analysis of company price trends, interactive candlestick/line charts, moving averages, Bollinger Bands, RSI, MACD, and statistical metrics.
 - **Company Discovery**: Dynamic discovery script that crawls the live market universe and updates company ID mappings.
 - **Automated GitHub Actions**: Scheduled workflow that executes during NEPSE trading hours (Sun–Thu) and automatically commits updated datasets.
 
@@ -41,12 +42,13 @@ nepse/
     │   │   ├── session.py                # HTTP session factory, CSRF tokens & shared fetchers
     │   │   └── status.py                 # Price direction classifier (+1, -1, 0)
     │   ├── allDataScrapper.py            # Scrapes entire multi-year daily history
+    │   ├── app.py                        # Streamlit web dashboard for charts & analytics
     │   ├── backfillHourlyData.py         # Interpolates daily data into hourly records
     │   ├── dailyDataScrapper.py          # Daily market close price scraper
     │   ├── discoverCompanies.py          # Discovers new symbols and updates mappings
     │   ├── hourlyDataScrapper.py         # Intra-day hourly price scraper
     │   ├── requirements.txt              # Python dependencies
-    │   └── runAllScrapers.py             # Master runner executing daily and hourly scrapers
+    │   └── runAllScrapers.py             # Master runner executing all scrapers
     └── README.md
 ```
 
@@ -103,7 +105,16 @@ pip install -r requirements.txt
 
 ## 💻 Usage
 
-### Run All Scrapers (Recommended)
+### 1. Launch Interactive Streamlit Dashboard (Charts & Analytics)
+Launch the visual web dashboard to explore charts, candlestick patterns, moving averages, RSI, and MACD for any NEPSE company:
+```bash
+cd nepse-data/src
+streamlit run app.py
+```
+
+---
+
+### 2. Run All Scrapers (Data Pipeline)
 Executes company discovery, daily close, hourly snapshots, and full historical scrapers in one sequence:
 ```bash
 cd nepse-data/src
@@ -168,9 +179,3 @@ The repository includes a GitHub Actions workflow located at `.github/workflows/
 - **Atomic Appends**: Scraped entries check the existing file via fast binary tail-checks and timestamp sets to prevent duplicate rows.
 - **Sanitized Filenames**: Symbols containing special characters are sanitized into filesystem-safe filenames.
 - **Robust Error Handling**: Network retries and CSRF token re-priming prevent interruptions during long scraping sessions.
-
----
-
-
-# Nepse_data
-# Nepse_data
