@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -38,13 +40,13 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-      - name: Commit updated data files
+      - name: Commit and push updated data files
         run: |
-          git add -A
-          git commit -m "chore: auto-update NEPSE daily, hourly & minute data [$(date -u +'%Y-%m-%d %H:%M UTC')]" || echo "No changes to commit"
-
-      - name: Push changes
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
+          git add ../data
+          if git diff --staged --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "chore: auto-update NEPSE daily, hourly & minute data [$(date -u +'%Y-%m-%d %H:%M UTC')]"
+            git pull --rebase origin main
+            git push origin main
+          fi
