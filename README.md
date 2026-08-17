@@ -77,7 +77,7 @@ Nepse_data/
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/<your-username>/Nepse_data.git
+git clone https://github.com/Sleepyhead46/Nepse_data
 cd Nepse_data
 ```
 
