@@ -29,9 +29,12 @@ A self-updating stock market data pipeline and analytics dashboard for the **Nep
 
 ### 🤖 Automated Data Pipeline
 - **GitHub Actions** workflow runs daily at **4:30 PM NPT** (10:45 UTC)
+- **Parallel scraping** — company history is fetched by a pool of concurrent
+  workers (default `8`, tunable via the `SCRAPERS_WORKERS` environment
+  variable); every worker keeps its own session & CSRF token
 - Pipeline stages (in order):
   1. **Company Discovery** — detects newly listed companies
-  2. **Daily Scraper** — fetches end-of-day OHLCV data
+  2. **Daily Scraper** — syncs every company's complete price history from the ShareSansar price-history API (any days missed by previous runs self-heal on the next run)
   3. **Hourly Scraper** + **Hourly Backfill** — live snapshot + gap-filling
   4. **Minute Scraper** + **Minute Backfill** — live snapshot + gap-filling
 - All data is committed directly back to the repository
@@ -59,10 +62,10 @@ Nepse_data/
 │   ├── backfillHourlyData.py      # Hourly historical backfill
 │   ├── backfillMinuteData.py      # Minute historical backfill
 │   ├── allDataScrapper.py         # Full historical scraper (initial seed)
-│   ├── requirements.txt           # Python dependencies
 │   ├── config/                    # Configuration constants
-│   ├── constants/                 # Shared constants
-│   └── utils/                     # Shared utilities (session, status, etc.)
+│   ├── constants/                 # Shared constants & company-ID map
+│   └── utils/                     # Shared utilities (session, history, status…)
+├── requirements.txt               # Python dependencies (repo root)
 ├── .gitignore
 └── README.md
 ```
@@ -77,31 +80,35 @@ Nepse_data/
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/<your-username>/Nepse_data.git
+git clone https://github.com/Sleepyhead46/Nepse_data.git
 cd Nepse_data
 ```
 
 ### 2. Install dependencies
+Dependencies live in the repo-root [`requirements.txt`](requirements.txt):
 ```bash
-cd src
 pip install -r requirements.txt
 ```
 
-### 3. (Optional) Seed historical data
-Run the full historical scraper once to populate initial data:
+### 3. Seed historical data
+The daily scraper seeds the **full published history** automatically the first
+time it sees a company. For a manual full re-scrape you can still run:
 ```bash
-python allDataScrapper.py
+python src/allDataScrapper.py
 ```
 
 ### 4. Run the dashboard
 ```bash
-streamlit run app.py
+streamlit run src/app.py
 ```
 
 ### 5. Run all scrapers manually
 ```bash
-python runAllScrapers.py
+python src/runAllScrapers.py
 ```
+
+> Every script resolves its own directory via `sys.path`, so all commands above
+> work directly from the repository root — no need to `cd src` first.
 
 ---
 
@@ -132,7 +139,8 @@ The workflow at [`.github/workflows/schedule-updater.yml`](.github/workflows/sch
 ```
 Trigger:  Daily cron at 10:45 UTC (4:30 PM NPT)
           + manual workflow_dispatch
-Steps:    checkout → setup Python 3.10 → install deps →
+Guard:    Runs are serialized (concurrency group), 3h timeout per job
+Steps:    checkout → setup Python 3.10 → install deps from root requirements.txt →
           run runAllScrapers.py → git commit & push data/
 ```
 
@@ -156,3 +164,4 @@ Steps:    checkout → setup Python 3.10 → install deps →
 ## 📜 License
 
 This project is open source. Data is sourced from publicly available NEPSE market feeds. Use responsibly and respect the source's terms of service.
+# Nepse_data_
