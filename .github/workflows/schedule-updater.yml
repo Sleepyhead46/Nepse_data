@@ -50,7 +50,10 @@ jobs:
 
       - name: Commit and push updated data files
         run: |
-          git add ../data
+          # data/ holds scraped CSVs; src/constants/companyIdMap.py is rewritten by
+          # discoverCompanies.py when a new listing appears - leaving it unstaged
+          # breaks the later `git pull --rebase` (rebase needs a clean tree)
+          git add ../data ../src/constants/companyIdMap.py
           if git diff --staged --quiet; then
             echo "No data changes to commit."
           else

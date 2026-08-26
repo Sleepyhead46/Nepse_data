@@ -1,0 +1,2 @@
+YAML OK -> ['actions/checkout@v7', 'actions/setup-python@v7']
+git-tracked: src/constants/companyIdMap.py

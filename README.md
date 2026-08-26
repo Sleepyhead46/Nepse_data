@@ -141,7 +141,7 @@ Trigger:  Daily cron at 10:45 UTC (4:30 PM NPT)
           + manual workflow_dispatch
 Guard:    Runs are serialized (concurrency group), 3h timeout per job
 Steps:    checkout → setup Python 3.10 → install deps from root requirements.txt →
-          run runAllScrapers.py → git commit & push data/
+          run runAllScrapers.py → git commit & push data/ + src/constants/companyIdMap.py
 ```
 
 > No secrets or API keys are required — data is scraped from publicly accessible NEPSE sources.
