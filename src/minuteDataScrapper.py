@@ -67,19 +67,15 @@ def scrape_minute_snapshot(session=None, time_str=None):
         print("Error: 'Symbol' column not found in price table.")
         return
 
-    symbols = data_table["Symbol"].dropna().unique()
+    # One pass over unique symbols instead of a full-table .loc filter per symbol
+    unique_rows = data_table.dropna(subset=["Symbol"]).drop_duplicates(subset=["Symbol"], keep="first")
     updated_count = 0
     skipped_count = 0
     new_count = 0
 
-    for raw_symbol in symbols:
-        raw_symbol_str = str(raw_symbol).strip()
-        matching = data_table.loc[data_table["Symbol"] == raw_symbol_str]
-        if matching.empty:
-            continue
-
+    for row_data in unique_rows.to_dict("records"):
+        raw_symbol_str = str(row_data["Symbol"]).strip()
         symbol = re.sub(r"[^\w\-]", "_", raw_symbol_str)
-        row_data = matching.iloc[0].to_dict()
         formatted_row = format_minute_row(today_date, time_str, row_data)
         current_timestamp = formatted_row[1]
 
@@ -90,12 +86,11 @@ def scrape_minute_snapshot(session=None, time_str=None):
             skipped_count += 1
             continue
 
+        new_df = minute_records_to_dataframe([formatted_row])
         if out_file.exists() and out_file.stat().st_size > 0:
-            new_df = minute_records_to_dataframe([formatted_row])
             new_df.to_csv(out_file, mode="a", header=False, index=False)
             updated_count += 1
         else:
-            new_df = minute_records_to_dataframe([formatted_row])
             new_df.to_csv(out_file, index=False)
             new_count += 1
 

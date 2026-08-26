@@ -1,6 +1,8 @@
 import io
 import datetime
+import os
 import re
+import threading
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -53,3 +55,38 @@ def fetch_today_share_prices(session=None):
         raise ValueError("No price tables found in ShareSansar response.")
 
     return today_date, tables[0]
+
+
+# ---------------------------------------------------------------------------
+# Parallel scraping support
+# ---------------------------------------------------------------------------
+
+# Number of parallel company workers (network-bound, so threads scale well).
+# Override with e.g. SCRAPERS_WORKERS=4 to be extra polite to the source site.
+WORKERS = max(1, int(os.environ.get("SCRAPERS_WORKERS", "8")))
+
+_thread_local = threading.local()
+
+
+def get_thread_scraper():
+    """Returns THIS thread's own (session, csrf-token) pair, creating and
+    priming it on first use.
+
+    ShareSansar's CSRF token is bound to the Laravel session cookie stored on
+    the requests.Session, so concurrent workers must never share a single
+    session - each thread primes (and later refreshes) its own pair."""
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = make_session()
+        try:
+            token = prime_session(session)
+        except requests.RequestException:
+            token = None
+        _thread_local.session = session
+        _thread_local.token = token
+    return session, getattr(_thread_local, "token", None)
+
+
+def set_thread_token(token):
+    """Stores the refreshed CSRF token for the calling thread's session."""
+    _thread_local.token = token

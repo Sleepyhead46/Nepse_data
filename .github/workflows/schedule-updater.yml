@@ -2,12 +2,17 @@ name: update-nepse-data
 
 on:
   schedule:
-      # Runs daily at 4:30 PM NPT (10:45 UTC)
-  - cron: "45 10 * * *"
+    # Runs daily at 4:30 PM NPT (10:45 UTC)
+    - cron: "45 10 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# Serialize runs so overlapping manual/scheduled triggers can't race on commits
+concurrency:
+  group: nepse-data-update
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -15,8 +20,9 @@ defaults:
 
 jobs:
   update-data:
-    name: Scrape & Commit NEPSE Data (5:00 PM NPT Daily)
+    name: Scrape & Commit NEPSE Data (4:30 PM NPT Daily)
     runs-on: ubuntu-latest
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
@@ -29,8 +35,9 @@ jobs:
         with:
           python-version: "3.10"
 
+      # requirements.txt lives at the repo root, not in src/
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r "$GITHUB_WORKSPACE/requirements.txt"
 
       - name: Run scrapers (discovery → daily → hourly → minute)
         run: python runAllScrapers.py

@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 # Add src directory to path
@@ -19,38 +20,39 @@ def main():
     print("Starting NEPSE Incremental Update Suite")
     print("==================================================\n")
 
-    print("[1/5] Discovering New Listed Companies...")
-    try:
-        run_discover()
-        print("Company discovery finished.")
-    except Exception as exc:
-        print(f"Company discovery error: {exc}")
+    stages = [
+        ("Discovering New Listed Companies", [run_discover]),
+        ("Updating Daily Close Data (Last Date to Current)", [run_daily]),
+        (
+            "Updating Hourly Data (Live Snapshot & Incremental Backfill)",
+            [run_hourly, run_backfill_hourly],
+        ),
+        (
+            "Updating Minute Data (Live Snapshot & Incremental Backfill)",
+            [run_minute, run_backfill_minute],
+        ),
+    ]
 
-    print("\n[2/5] Updating Daily Close Data (Last Date to Current)...")
-    try:
-        run_daily()
-        print("Daily scraper finished.")
-    except Exception as exc:
-        print(f"Daily scraper error: {exc}")
+    overall_start = time.perf_counter()
 
-    print("\n[3/5] Updating Hourly Data (Live Snapshot & Incremental Backfill)...")
-    try:
-        run_hourly()
-        run_backfill_hourly()
-        print("Hourly update finished.")
-    except Exception as exc:
-        print(f"Hourly update error: {exc}")
-
-    print("\n[4/5] Updating Minute Data (Live Snapshot & Incremental Backfill)...")
-    try:
-        run_minute()
-        run_backfill_minute()
-        print("Minute update finished.")
-    except Exception as exc:
-        print(f"Minute update error: {exc}")
+    for stage_no, (label, runners) in enumerate(stages, 1):
+        print(f"\n[{stage_no}/{len(stages)}] {label}...")
+        stage_start = time.perf_counter()
+        for runner in runners:
+            try:
+                runner()
+            except Exception as exc:
+                print(f"{label} error: {exc}")
+        print(
+            f"\n[{stage_no}/{len(stages)}] {label} finished "
+            f"in {time.perf_counter() - stage_start:.1f}s."
+        )
 
     print("\n==================================================")
-    print("All NEPSE Datasets Updated to Current!")
+    print(
+        f"All NEPSE Datasets Updated to Current! "
+        f"(total {time.perf_counter() - overall_start:.1f}s)"
+    )
     print("==================================================")
 
 

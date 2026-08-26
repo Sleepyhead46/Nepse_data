@@ -86,18 +86,22 @@ def interpolate_hourly_day(row):
 
 def process_company_backfill(file_path, limit_days=None):
     """Processes a single company's daily CSV incrementally to backfill hourly data
-    from the last hourly recorded date up to the current latest date."""
+    from the last hourly recorded date up to the current latest date.
+
+    Returns (new-row-count, status, message) where status is one of
+    created | updated | up_to_date | empty | no_valid_data."""
     symbol = file_path.stem
     clean_symbol = re.sub(r"[^\w\-]", "_", symbol)
 
     daily_df = pd.read_csv(file_path)
     if daily_df.empty or "published_date" not in daily_df.columns:
-        return 0, "empty"
+        return 0, "empty", f"{symbol}: no usable daily data."
 
     out_file = HOURLY_DIR / f"{clean_symbol}.csv"
 
     # Find the latest date already backfilled in hourly CSV
     last_hourly_date = None
+    last_hourly_timestamp = None
     existing_hourly_dates = set()
     existing_hourly_df = None
 
@@ -109,6 +113,12 @@ def process_company_backfill(file_path, limit_days=None):
                     existing_hourly_df["published_date"].dropna().astype(str).str.strip().values
                 )
                 last_hourly_date = str(existing_hourly_df["published_date"].dropna().max()).strip()
+                if "timestamp" in existing_hourly_df.columns:
+                    last_hourly_timestamp = str(
+                        existing_hourly_df["timestamp"].dropna().astype(str).str.strip().max()
+                    ).strip()
+                else:
+                    last_hourly_timestamp = last_hourly_date
         except Exception:
             existing_hourly_df = None
 
@@ -124,7 +134,13 @@ def process_company_backfill(file_path, limit_days=None):
         daily_to_process = daily_to_process.tail(limit_days)
 
     if daily_to_process.empty:
-        return 0, "up_to_date"
+        held_rows = len(existing_hourly_df) if existing_hourly_df is not None else 0
+        return (
+            0,
+            "up_to_date",
+            f"{clean_symbol} already holds every available record "
+            f"({held_rows} rows up to {last_hourly_timestamp}).",
+        )
 
     all_hourly_records = []
     for _, row in daily_to_process.iterrows():
@@ -132,7 +148,11 @@ def process_company_backfill(file_path, limit_days=None):
         all_hourly_records.extend(records)
 
     if not all_hourly_records:
-        return 0, "no_valid_data"
+        return (
+            0,
+            "no_valid_data",
+            f"{clean_symbol}: daily rows present but none produced valid hourly bars.",
+        )
 
     new_hourly_df = pd.DataFrame(all_hourly_records, columns=HOURLY_COLUMNS)
 
@@ -141,11 +161,20 @@ def process_company_backfill(file_path, limit_days=None):
         combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
         combined_df = combined_df.sort_values(by="timestamp").reset_index(drop=True)
         combined_df.to_csv(out_file, index=False)
-        return len(new_hourly_df), "updated"
+        return (
+            len(new_hourly_df),
+            "updated",
+            f"{clean_symbol} appended {len(new_hourly_df)} new rows "
+            f"(total {len(combined_df)}) -> {out_file.name}",
+        )
     else:
         new_hourly_df = new_hourly_df.sort_values(by="timestamp").reset_index(drop=True)
         new_hourly_df.to_csv(out_file, index=False)
-        return len(new_hourly_df), "created"
+        return (
+            len(new_hourly_df),
+            "created",
+            f"{clean_symbol} created new file with {len(new_hourly_df)} rows -> {out_file.name}",
+        )
 
 
 def main():
@@ -167,10 +196,19 @@ def main():
     updated_companies = 0
     up_to_date_companies = 0
     created_companies = 0
+    failed_companies = 0
     total_new_records = 0
 
-    for file_path in daily_files:
-        count, status = process_company_backfill(file_path, limit_days=args.limit_days)
+    for done, file_path in enumerate(daily_files, start=1):
+        try:
+            count, status, message = process_company_backfill(
+                file_path, limit_days=args.limit_days
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad file must not kill the run
+            failed_companies += 1
+            print(f"[{done}/{total_files}] {file_path.stem}: FAILED ({type(exc).__name__}): {exc}")
+            continue
+
         if status == "updated":
             updated_companies += 1
             total_new_records += count
@@ -180,10 +218,12 @@ def main():
         elif status == "up_to_date":
             up_to_date_companies += 1
 
+        print(f"[{done}/{total_files}] {message}")
+
     print(
         f"\nHourly backfill complete! "
         f"Created: {created_companies}, Updated: {updated_companies}, "
-        f"Already up-to-date (skipped): {up_to_date_companies}. "
+        f"Already up-to-date: {up_to_date_companies}, Failed: {failed_companies}. "
         f"Total new hourly records generated: {total_new_records}."
     )
 
