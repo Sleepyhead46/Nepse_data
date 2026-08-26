@@ -1,4 +1,5 @@
 import argparse
+import os
 import re
 from pathlib import Path
 import pandas as pd
@@ -96,48 +97,66 @@ def interpolate_minute_day(row, trading_intervals):
     return minute_rows
 
 
-def process_company_minute_backfill(file_path, trading_intervals, limit_days=None):
-    """Processes a single company's daily CSV incrementally to backfill minute data
-    from the last recorded date/time up to current.
+def _last_timestamp_from_tail(file_path, nbytes=65536):
+    """Reads only the trailing bytes of the CSV and returns the last row's
+    timestamp ('YYYY-MM-DD HH:MM:SS'), '' when the file holds no data rows yet
+    (header only), or None when the tail cannot be trusted (crash-truncated
+    final line, corrupt content). Minute files are written chronologically
+    sorted, so the last line always carries the newest record."""
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        return ""
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - nbytes))
+            tail = f.read().decode("utf-8", errors="ignore")
+        lines = [ln for ln in tail.splitlines() if ln.strip()]
+        if len(lines) < 2:  # header only
+            return ""
+        parts = lines[-1].split(",")
+        date_str, ts = parts[0].strip(), parts[1].strip()
+        if len(ts) >= 19 and ts[4] == "-" and len(date_str) >= 10 and date_str[4] == "-":
+            return ts
+    except Exception:
+        pass
+    return None
 
-    Returns (new-row-count, status, message) where status is one of
-    created | updated | up_to_date | empty | no_valid_data."""
-    symbol = file_path.stem
-    clean_symbol = re.sub(r"[^\w\-]", "_", symbol)
 
-    daily_df = pd.read_csv(file_path)
-    if daily_df.empty or "published_date" not in daily_df.columns:
-        return 0, "empty", f"{symbol}: no usable daily data."
+def _interpolate_days(daily_to_process, trading_intervals):
+    """Interpolates each selected daily row into per-minute records."""
+    all_minute_records = []
+    for _, row in daily_to_process.iterrows():
+        all_minute_records.extend(interpolate_minute_day(row, trading_intervals))
+    return all_minute_records
 
-    out_file = MINUTE_DIR / f"{clean_symbol}.csv"
 
-    # Find the latest date already backfilled in minute CSV
+def _full_merge_backfill(file_path, daily_df, trading_intervals, limit_days, out_file, clean_symbol):
+    """Whole-file strategy: load the entire minute CSV, merge, de-duplicate and
+    rewrite. Only used when the incremental tail read is unreliable."""
+    existing_minute_df = None
     last_minute_date = None
     last_minute_timestamp = None
-    existing_minute_dates = set()
-    existing_minute_df = None
 
-    if out_file.exists() and out_file.stat().st_size > 0:
-        try:
-            existing_minute_df = pd.read_csv(out_file)
-            if "published_date" in existing_minute_df.columns and not existing_minute_df.empty:
-                existing_minute_dates = set(
-                    existing_minute_df["published_date"].dropna().astype(str).str.strip().values
-                )
-                last_minute_date = str(existing_minute_df["published_date"].dropna().max()).strip()
-                if "timestamp" in existing_minute_df.columns:
-                    last_minute_timestamp = str(
-                        existing_minute_df["timestamp"].dropna().astype(str).str.strip().max()
-                    ).strip()
-                else:
-                    last_minute_timestamp = last_minute_date
-        except Exception:
-            existing_minute_df = None
+    try:
+        existing_minute_df = pd.read_csv(out_file)
+        if "published_date" in existing_minute_df.columns and not existing_minute_df.empty:
+            existing_minute_dates = set(
+                existing_minute_df["published_date"].dropna().astype(str).str.strip().values
+            )
+            last_minute_date = str(existing_minute_df["published_date"].dropna().max()).strip()
+            if "timestamp" in existing_minute_df.columns:
+                last_minute_timestamp = str(
+                    existing_minute_df["timestamp"].dropna().astype(str).str.strip().max()
+                ).strip()
+            else:
+                last_minute_timestamp = last_minute_date
+    except Exception:
+        existing_minute_df = None
 
     if last_minute_date:
+        dates = daily_df["published_date"].astype(str).str.strip()
         daily_to_process = daily_df[
-            (daily_df["published_date"].astype(str).str.strip() > last_minute_date)
-            | (~daily_df["published_date"].astype(str).str.strip().isin(existing_minute_dates))
+            (dates > last_minute_date) | (~dates.isin(existing_minute_dates))
         ]
     else:
         daily_to_process = daily_df
@@ -154,10 +173,7 @@ def process_company_minute_backfill(file_path, trading_intervals, limit_days=Non
             f"({held_rows} rows up to {last_minute_timestamp}).",
         )
 
-    all_minute_records = []
-    for _, row in daily_to_process.iterrows():
-        records = interpolate_minute_day(row, trading_intervals)
-        all_minute_records.extend(records)
+    all_minute_records = _interpolate_days(daily_to_process, trading_intervals)
 
     if not all_minute_records:
         return (
@@ -187,6 +203,87 @@ def process_company_minute_backfill(file_path, trading_intervals, limit_days=Non
             "created",
             f"{clean_symbol} created new file with {len(new_minute_df)} rows -> {out_file.name}",
         )
+
+
+def process_company_minute_backfill(file_path, trading_intervals, limit_days=None):
+    """Processes a single company's daily CSV incrementally to backfill minute data
+    from the last recorded date/time up to current.
+
+    Fast incremental path: finds the newest recorded timestamp from the file
+    tail alone and APPENDS freshly interpolated days - the multi-MB minute
+    files are never fully loaded or rewritten (fully reloading + rewriting all
+    companies' files used to cost ~10 GB of disk IO per run). Falls back to
+    _full_merge_backfill only when the tail cannot be trusted.
+
+    ponytail: days older than the file's last date are assumed already present
+    (minute data is only ever generated from these same daily files, and new
+    dates only arrive at the end). Mid-history gap healing is therefore not
+    automatic anymore; upgrade path is a small sidecar per-symbol date index.
+
+    Returns (new-row-count, status, message) where status is one of
+    created | updated | up_to_date | empty | no_valid_data."""
+    symbol = file_path.stem
+    clean_symbol = re.sub(r"[^\w\-]", "_", symbol)
+
+    daily_df = pd.read_csv(file_path)
+    if daily_df.empty or "published_date" not in daily_df.columns:
+        return 0, "empty", f"{symbol}: no usable daily data."
+
+    out_file = MINUTE_DIR / f"{clean_symbol}.csv"
+    has_data = out_file.exists() and out_file.stat().st_size > 0
+
+    if has_data:
+        last_timestamp = _last_timestamp_from_tail(out_file)
+        if last_timestamp is None:  # untrusted tail -> safe full merge
+            return _full_merge_backfill(
+                file_path, daily_df, trading_intervals, limit_days, out_file, clean_symbol
+            )
+        last_minute_date = last_timestamp[:10] if last_timestamp else None
+        if last_minute_date:
+            dates = daily_df["published_date"].astype(str).str.strip()
+            daily_to_process = daily_df[dates > last_minute_date]
+        else:  # header-only file: everything still needs backfilling
+            daily_to_process = daily_df
+    else:
+        daily_to_process = daily_df
+
+    if limit_days and len(daily_to_process) > limit_days:
+        daily_to_process = daily_to_process.tail(limit_days)
+
+    if daily_to_process.empty:
+        return (
+            0,
+            "up_to_date",
+            f"{clean_symbol} already holds every available record (up to {last_timestamp}).",
+        )
+
+    all_minute_records = _interpolate_days(daily_to_process, trading_intervals)
+
+    if not all_minute_records:
+        return (
+            0,
+            "no_valid_data",
+            f"{clean_symbol}: daily rows present but none produced valid minute bars.",
+        )
+
+    new_minute_df = pd.DataFrame(all_minute_records, columns=MINUTE_COLUMNS)
+    new_minute_df = new_minute_df.sort_values(by="timestamp").reset_index(drop=True)
+
+    if has_data:  # chronological append - never rewrite the existing file
+        new_minute_df.to_csv(out_file, mode="a", header=False, index=False)
+        return (
+            len(new_minute_df),
+            "updated",
+            f"{clean_symbol} appended {len(new_minute_df)} new rows "
+            f"(up to {new_minute_df['timestamp'].iloc[-1]}) -> {out_file.name}",
+        )
+
+    new_minute_df.to_csv(out_file, index=False)
+    return (
+        len(new_minute_df),
+        "created",
+        f"{clean_symbol} created new file with {len(new_minute_df)} rows -> {out_file.name}",
+    )
 
 
 def main():

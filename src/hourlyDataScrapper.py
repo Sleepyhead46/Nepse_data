@@ -12,36 +12,54 @@ from utils.session import make_session, fetch_today_share_prices
 OUT_DIR = (Path(__file__).resolve().parent.parent / "data" / "company-wise-hourly").resolve()
 
 
-def check_timestamp_exists(file_path, target_timestamp):
-    """Fast check whether target_timestamp already exists in the hourly CSV."""
+def _last_line_timestamp(file_path, nbytes=65536):
+    """Returns the last data row's timestamp ('YYYY-MM-DD HH:MM:SS'), '' when
+    the file holds no data rows yet (header only), or None when the tail cannot
+    be trusted (crash-truncated final line, corrupt content). Snapshot files
+    are written chronologically, so the last line always carries the newest
+    record."""
     if not file_path.exists() or file_path.stat().st_size == 0:
-        return False
-
-    target_str = str(target_timestamp).strip()
+        return ""
     try:
-        # Fast tail check: read last 4KB to see if recent timestamp is present
         with open(file_path, "rb") as f:
             f.seek(0, os.SEEK_END)
-            size = f.tell()
-            seek_pos = max(0, size - 4096)
-            f.seek(seek_pos)
-            tail_content = f.read().decode("utf-8", errors="ignore")
-            if target_str in tail_content:
-                return True
+            f.seek(max(0, f.tell() - nbytes))
+            tail = f.read().decode("utf-8", errors="ignore")
+        lines = [ln for ln in tail.splitlines() if ln.strip()]
+        if len(lines) < 2:  # header only
+            return ""
+        parts = lines[-1].split(",")
+        date_str, ts = parts[0].strip(), parts[1].strip()
+        if len(ts) >= 19 and ts[4] == "-" and len(date_str) >= 10 and date_str[4] == "-":
+            return ts
+    except Exception:
+        pass
+    return None
 
-        # Fallback to checking full timestamp column if not found in tail
+
+def check_timestamp_exists(file_path, target_timestamp):
+    """Fast chronological duplicate check against ONLY the last recorded
+    timestamp.
+
+    Snapshot rows are appended chronologically, so a target timestamp is
+    already recorded iff it is <= the file's newest record. Reading one tail
+    line is O(1); the previous full-column pandas fallback re-parsed every
+    company's whole CSV on each snapshot, because a brand-new timestamp never
+    matches the recent 4KB tail and therefore ALWAYS fell through to the slow
+    full-file read. The full scan is kept only as a safety net for an
+    untrusted (crash-truncated) final line."""
+    verdict = _last_line_timestamp(file_path)
+    if verdict is not None:
+        target_str = str(target_timestamp).strip()
+        return bool(verdict) and target_str <= verdict
+
+    # Untrusted tail: fall back to the exact full-column scan.
+    try:
         df = pd.read_csv(file_path, usecols=["timestamp"])
         timestamps = set(df["timestamp"].dropna().astype(str).str.strip().values)
-        return target_str in timestamps
+        return str(target_timestamp).strip() in timestamps
     except Exception:
-        try:
-            df = pd.read_csv(file_path)
-            if "timestamp" in df.columns:
-                timestamps = set(df["timestamp"].dropna().astype(str).str.strip().values)
-                return target_str in timestamps
-        except Exception:
-            return False
-    return False
+        return False
 
 
 def scrape_hourly_snapshot(session=None, hour_str=None):
