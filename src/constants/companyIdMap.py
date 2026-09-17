@@ -387,6 +387,7 @@ companyIdMap = {
     "SMHL": 1194,
     "SMJC": 1201,
     "SMPDA": 1511,
+    "SMPDAP": 1523,
     "SNLI": 760,
     "SNORL": 1327,
     "SOHL": 1362,
