@@ -256,6 +256,7 @@ companyIdMap = {
     "NMBMF": 506,
     "NMBPO": 277,
     "NMFBS": 1313,
+    "NMFBSP": 812,
     "NMIC": 1324,
     "NMLBBL": 1272,
     "NRIC": 534,
