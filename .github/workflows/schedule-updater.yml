@@ -2,14 +2,17 @@ name: update-nepse-data
 
 on:
   schedule:
-    # Runs daily at 4:30 PM NPT (10:45 UTC)
-    - cron: "45 10 * * *"
+    # Runs every day at 5:30 PM Nepal Time
+    - cron: "30 17 * * *"
+      timezone: "Asia/Kathmandu"
+
+  # Allows manual execution from GitHub Actions
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Serialize runs so overlapping manual/scheduled triggers can't race on commits
+# Prevent multiple scraper runs from modifying the repository simultaneously.
 concurrency:
   group: nepse-data-update
   cancel-in-progress: false
@@ -20,44 +23,119 @@ defaults:
 
 jobs:
   update-data:
-    name: Scrape & Commit NEPSE Data (4:30 PM NPT Daily)
+    name: Scrape & Commit NEPSE Data - 5:30 PM NPT
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
-      # node24-native majors (v4/v5 targeted Node 20, which GitHub deprecated)
+
+      # ==========================================
+      # 1. Checkout repository
+      # ==========================================
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
+      # ==========================================
+      # 2. Setup Python
+      # ==========================================
       - name: Set up Python 3.10
         uses: actions/setup-python@v7
         with:
           python-version: "3.10"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
 
-      # requirements.txt lives at the repo root, not in src/
+      # ==========================================
+      # 3. Install dependencies
+      # ==========================================
       - name: Install dependencies
-        run: pip install -r "$GITHUB_WORKSPACE/requirements.txt"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r "$GITHUB_WORKSPACE/requirements.txt"
 
-      - name: Run scrapers (discovery → daily → hourly → minute)
-        run: python runAllScrapers.py
+      # ==========================================
+      # 4. Display execution time
+      # ==========================================
+      - name: Display execution time
+        working-directory: .
+        run: |
+          echo "=========================================="
+          echo "NEPSE DATA UPDATE"
+          echo "=========================================="
+          echo "UTC Time:"
+          date -u
+          echo ""
+          echo "Nepal Time:"
+          TZ=Asia/Kathmandu date
+          echo "=========================================="
 
+      # ==========================================
+      # 5. Run all scrapers
+      # ==========================================
+      - name: Run scrapers
+        run: |
+          echo "Starting NEPSE scrapers..."
+          python runAllScrapers.py
+          echo "Scrapers completed."
+
+      # ==========================================
+      # 6. Configure Git
+      # ==========================================
       - name: Configure git identity
+        working-directory: .
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-      - name: Commit and push updated data files
+      # ==========================================
+      # 7. Check repository changes
+      # ==========================================
+      - name: Check for changes
+        working-directory: .
         run: |
-          # data/ holds scraped CSVs; src/constants/companyIdMap.py is rewritten by
-          # discoverCompanies.py when a new listing appears - leaving it unstaged
-          # breaks the later `git pull --rebase` (rebase needs a clean tree)
-          git add ../data ../src/constants/companyIdMap.py
+          echo "Checking for updated files..."
+          git status --short
+
+      # ==========================================
+      # 8. Commit and push updated data
+      # ==========================================
+      - name: Commit and push updated data files
+        working-directory: .
+        run: |
+
+          # Add scraped data
+          git add data
+
+          # Add company mapping updated by discoverCompanies.py
+          git add src/constants/companyIdMap.py
+
+          # Check whether anything changed
           if git diff --staged --quiet; then
-            echo "No data changes to commit."
+
+            echo "=========================================="
+            echo "No data changes detected."
+            echo "Nothing to commit."
+            echo "=========================================="
+
           else
-            git commit -m "chore: auto-update NEPSE daily, hourly & minute data [$(date -u +'%Y-%m-%d %H:%M UTC')]"
+
+            echo "=========================================="
+            echo "Changes detected."
+            echo "Creating commit..."
+            echo "=========================================="
+
+            git commit -m "chore: auto-update NEPSE data [$(date -u +'%Y-%m-%d %H:%M UTC')]"
+
+            echo "Pulling latest changes from main..."
             git pull --rebase origin main
+
+            echo "Pushing updated data..."
             git push origin main
+
+            echo "=========================================="
+            echo "NEPSE data update completed successfully."
+            echo "=========================================="
+
           fi
