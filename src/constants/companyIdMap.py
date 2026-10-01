@@ -294,6 +294,7 @@ companyIdMap = {
     "PLIC": 144,
     "PMHPL": 681,
     "PMLI": 1296,
+    "PMLIP": 1458,
     "PPCL": 720,
     "PPL": 973,
     "PRIN": 556,
