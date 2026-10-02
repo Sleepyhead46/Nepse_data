@@ -207,6 +207,7 @@ companyIdMap = {
     "MMF1": 1100,
     "MMKJL": 966,
     "MNBBL": 306,
+    "MNBBLP": 558,
     "MNMF1": 1365,
     "MPFL": 318,
     "MSHL": 1170,
