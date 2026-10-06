@@ -3,6 +3,7 @@
 companyIdMap = {
     "ACLBSL": 1039,
     "ADBL": 24,
+    "ADBLB86": 1105,
     "ADBLD83": 996,
     "AHL": 1010,
     "AHPC": 121,
