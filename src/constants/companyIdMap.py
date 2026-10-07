@@ -159,6 +159,7 @@ companyIdMap = {
     "KRBL": 155,
     "KSBBL": 657,
     "KSBBLD87": 1471,
+    "KSBBLP": 732,
     "KSY": 1225,
     "LBBL": 668,
     "LBBLD89": 1203,
