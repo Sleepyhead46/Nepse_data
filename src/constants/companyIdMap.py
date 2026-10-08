@@ -424,6 +424,7 @@ companyIdMap = {
     "SWASTIK": 915,
     "SWBBL": 176,
     "SWMF": 1156,
+    "SWMFPO": 1209,
     "SYPNL": 1355,
     "TAMOR": 829,
     "TPC": 968,
