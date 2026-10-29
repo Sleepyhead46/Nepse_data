@@ -174,6 +174,7 @@ companyIdMap = {
     "LSD92": 1610,
     "LSH12": 1597,
     "LSL": 1280,
+    "LSLPO": 1329,
     "LUK": 949,
     "LVF2": 1174,
     "MABEL": 1317,
